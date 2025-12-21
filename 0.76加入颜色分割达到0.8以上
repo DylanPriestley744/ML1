@@ -137,13 +137,9 @@ def main():
 
 if __name__ == "__main__":
     main()
-    %%writefile /kaggle/working/feature_extraction.py
-# ====== Ultimate Feature Extractor + Green Segmentation + Crop ======
-# 步骤：
-# 1. 用 HSV 分割绿色区域
-# 2. 找最大连通区域，裁剪出植物 ROI
-# 3. Resize 到固定大小
-# 4. 做旋转增强 + HOG + LBP + HSV/LAB 颜色特征
+%%writefile /kaggle/working/feature_extraction.py
+# ====== Ultimate Feature Extractor + Green Segmentation ======
+# 包含：绿色区域分割 + 旋转增强 + 强化HOG + 强化LBP + HSV/LAB颜色特征
 
 import cv2
 import numpy as np
@@ -160,7 +156,7 @@ class FeatureExtractor:
         self.hist_bins = 32
 
     # ------------------------------
-    # 绿色区域分割
+    # 绿色区域分割（非常适合植物）
     # ------------------------------
     def segment_green(self, img):
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -171,53 +167,24 @@ class FeatureExtractor:
 
         mask = cv2.inRange(hsv, lower_green, upper_green)
 
-        # 形态学处理去噪
+        # 形态学去噪
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-        return mask
+        # 仅保留植物区域
+        segmented = cv2.bitwise_and(img, img, mask=mask)
+
+        return segmented
 
     # ------------------------------
-    # 根据 mask 裁剪最大连通区域 ROI
-    # ------------------------------
-    def crop_to_largest_component(self, img, mask):
-        # 找连通区域
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if num_labels <= 1:
-            # 没有找到前景，直接返回原图
-            return img
-
-        # stats: [label, 5] -> [x, y, w, h, area]
-        # 跳过 label 0（背景），找面积最大的前景
-        areas = stats[1:, 4]
-        max_idx = np.argmax(areas) + 1
-        x, y, w, h, area = stats[max_idx]
-
-        # 防止极端小区域
-        if area < 50:
-            return img
-
-        h_img, w_img = img.shape[:2]
-        x0 = max(0, x)
-        y0 = max(0, y)
-        x1 = min(w_img, x + w)
-        y1 = min(h_img, y + h)
-
-        roi = img[y0:y1, x0:x1]
-        if roi.size == 0:
-            return img
-        return roi
-
-    # ------------------------------
-    # 基础预处理：分割 + 裁剪 + Resize + RGB
+    # 基础预处理
     # ------------------------------
     def preprocess(self, img):
-        mask = self.segment_green(img)
-        cropped = self.crop_to_largest_component(img, mask)
-        resized = cv2.resize(cropped, self.image_size)
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        return rgb
+        img = self.segment_green(img)         # ★ 新增：先进行分割
+        img = cv2.resize(img, self.image_size)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return img
 
     # ------------------------------
     # 旋转增强
@@ -274,7 +241,7 @@ class FeatureExtractor:
         return np.concatenate([f_hog, f_lbp, f_col])
 
     # ------------------------------
-    # 最终特征：旋转增强取平均
+    # 最终特征（旋转增强取平均）
     # ------------------------------
     def extract_all_features(self, img):
         aug_imgs = [
